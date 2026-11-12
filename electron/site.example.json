@@ -1,0 +1,8 @@
+{
+  "host": "203.0.113.20",
+  "user": "pca",
+  "hostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHskZSbJ74lpVMds6VWUzrOBw+bq078/gUcLSYkScbNU",
+  "hostKeyFingerprint": "SHA256:nWlCa0k8AYz2R0+dYNoYQlcJ7hkEcYeBBI2Cggjez0w",
+  "uploadPage": "files.example.invalid/upload",
+  "feedUrl": "https://updates.example.invalid/vibex-pca/"
+}

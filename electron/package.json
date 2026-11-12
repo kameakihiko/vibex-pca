@@ -1,0 +1,43 @@
+{
+  "name": "vibex-pca",
+  "productName": "Vibex PCA",
+  "version": "0.9.3",
+  "description": "Vibex PCA edition for Windows and Linux: Claude Code, terminals, a side browser, servers, notes and an MCP server",
+  "license": "MIT",
+  "author": {
+    "name": "Shohabbos Usmonov",
+    "email": "kameakihiko@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/kameakihiko/vibex-pca",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "node build.mjs --gen && tsc --noEmit -p .",
+    "test": "npm run build && playwright test",
+    "dist:win": "npm run build && bash native/askpass-win/build.sh && bash native/presence-win/build.sh && electron-builder --win nsis --x64 --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "dist:dir": "npm run build && electron-builder --dir --publish never",
+    "dist:proof": "electron-builder --dir --publish never --config.directories.output=release-proof --config.beforePack=scripts/pack-proof.cjs --config.appId=uz.pca.vibex.proof --config.electronFuses.enableNodeCliInspectArguments=true"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.15"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@playwright/test": "1.64.0",
+    "@types/node": "24.7.0",
+    "@types/ssh2": "1.15.5",
+    "@untitledui/icons": "0.0.23",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "electron": "44.7.0",
+    "electron-builder": "26.17.0",
+    "electron-updater": "6.8.11",
+    "esbuild": "0.28.2",
+    "ssh2": "1.17.0",
+    "typescript": "5.9.3",
+    "zod": "4.6.7"
+  }
+}

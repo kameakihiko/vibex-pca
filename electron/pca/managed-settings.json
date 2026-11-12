@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/secrets/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.config/Vibex PCA/**)",
+      "Read(~/AppData/Roaming/Vibex PCA/**)"
+    ]
+  },
+  "disableAutoMode": "disable",
+  "forceLoginMethod": "claudeai",
+  "env": {
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1"
+  }
+}

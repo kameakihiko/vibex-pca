@@ -1,0 +1,74 @@
+# Proves auto-update with made-up versions, a made-up key and a feed on the runner, no secret: a packaged Linux app in a
+# container, and the NSIS install on a Windows runner. Both on GitHub-hosted runners. The release build, the owner's key
+# and the real feed are not here.
+name: vibex-pca-update-proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['electron/src/main/update*', 'electron/src/main/main.ts', 'electron/src/renderer/updater.ts', 'electron/package-lock.json', 'electron/scripts/update-proof.sh', 'electron/scripts/update-proof-windows.sh', 'electron/scripts/update-release.mjs', 'electron/tests/update-windows.spec.ts', 'electron/electron-builder.yml', '.github/workflows/vibex-pca-update-proof.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build two versions and walk the update
+        run: |
+          docker run --rm -v "$PWD:/src:ro" mcr.microsoft.com/playwright:v1.64.0-noble bash -euc '
+            cp -r /src /home/pwuser/repo && chown -R pwuser /home/pwuser/repo
+            su pwuser -c "
+              set -eu
+              cd /home/pwuser/repo/electron
+              npm ci --no-audit --no-fund
+              xvfb-run -a --server-args=\"-screen 0 1280x800x24\" bash scripts/update-proof.sh
+            "'
+
+  # An older installer, a newer one on 127.0.0.1, one button, and the new version running. Two proof builds: about 25 minutes.
+  windows-nsis:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: electron
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      VIBEX_TEST_OUT: test-output/update
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Fetch the pinned compiler
+        run: bash native/askpass-win/toolchain-windows.sh
+
+      - name: Build two versions and walk the update
+        run: bash scripts/update-proof-windows.sh
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibex-pca-update-proof-windows
+          path: |
+            electron/test-output/
+            electron/test-output-html/
+          if-no-files-found: ignore
+          retention-days: 3

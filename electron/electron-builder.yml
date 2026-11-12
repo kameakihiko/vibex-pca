@@ -1,0 +1,85 @@
+appId: uz.pca.vibex
+productName: Vibex PCA
+copyright: Copyright © 2026 Shohabbos Usmonov. Based on Vibex (MIT).
+directories:
+  output: release
+# Whatever dist/ holds, a pack starts from a fresh release build. Only CI's dist:proof names another step (scripts/pack-proof.cjs).
+beforePack: scripts/pack-release.cjs
+files:
+  - dist/**
+  - package.json
+  - "!dist/**/*.map"
+extraResources:
+  - from: ../LICENSE
+    to: LICENSE.vibex.txt
+  - from: ../Vibex/Resources/Fonts/OFL-GoogleSans.txt
+    to: OFL-GoogleSans.txt
+  # The PCA skills pack and the managed settings sample: read at run time from <resources>/pca (src/main/pcaEdition.ts).
+  - from: pca
+    to: pca
+# H2 of the security review: a started app cannot become a Node inspector or run other code in its place.
+# The proof build for CI (.github/workflows/vibex-pca.yml) turns only the inspector fuse back on.
+electronFuses:
+  runAsNode: false
+  enableNodeCliInspectArguments: false
+  enableNodeOptionsEnvironmentVariable: false
+  onlyLoadAppFromAsar: true
+  # N5: the app checks its asar against a hash in the binary, on Windows and macOS. Electron has no such check on Linux.
+  # In a per-user install with no code signature a program can change the binary too, so this raises the bar and is no wall.
+  enableEmbeddedAsarIntegrityValidation: true
+  # N2: a file:// page reads other files with this on. With it off, file:// finds nothing in the asar, so the window loads by
+  # vibex-app: (src/main/appPage.ts), and the side browser shows a local file by vibex-preview: (src/main/previewPage.ts).
+  grantFileProtocolExtraPrivileges: false
+  # A Mac test build only: a changed binary needs a new ad hoc signature, or macOS kills it at start.
+  resetAdHocDarwinSignature: true
+# node-pty loads a native .node file and, on Linux, a spawn helper: both must live outside the asar.
+asarUnpack:
+  - "**/node_modules/@lydell/**"
+artifactName: "Vibex-PCA-${version}-${os}-${arch}.${ext}"
+# The first entry is the address the installed app reads for updates (src/main/updater.ts). The one here is made up. A release
+# build writes the real one over it from the site file, which is never committed (scripts/update-release.mjs set-feed).
+# The second keeps the draft upload for tagged builds.
+publish:
+  - provider: generic
+    url: https://updates.example.invalid/vibex-pca/
+  - provider: github
+    owner: kameakihiko
+    repo: vibex-pca
+    releaseType: draft
+# The Vibex app icon (docs/icon-1024.png); electron-builder makes the .ico and the Linux sizes from it.
+icon: ../docs/icon-1024.png
+win:
+  target: nsis
+  # What ssh runs for a password: Electron itself cannot answer it (native/askpass-win). Read from process.resourcesPath. Built in CI, never committed; unsigned, like the rest.
+  extraResources:
+    - from: native/askpass-win/build/vibex-askpass.exe
+      to: vibex-askpass.exe
+    # Windows Hello before a saved server secret is read (native/presence-win, savedSecretGate.ts). Missing: the person types it.
+    - from: native/presence-win/build/vibex-presence.exe
+      to: vibex-presence.exe
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
+  maintainer: Shohabbos Usmonov <kameakihiko@users.noreply.github.com>
+  synopsis: Terminal, browser and MCP server for Claude Code
+deb:
+  # This list replaces electron-builder's default, so the default names stay.
+  depends:
+    - openssh-client
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+mac:
+  target: dir

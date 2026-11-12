@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+test-results/
+test-results-html/
+test-output/
+playwright-report/
+screens/
+.generated/
+release-proof/
+release-fence/
+native/askpass-win/build/
+
+# The real addresses of a team (src/main/site.ts). Never commit it.
+site.local.json

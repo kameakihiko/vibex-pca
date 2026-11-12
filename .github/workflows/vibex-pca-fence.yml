@@ -1,0 +1,183 @@
+# Vibex PCA, the Linux suite in a container (no screen), on a GitHub-hosted runner. "Fence" is the name of this proof:
+# a container holds the job, with a virtual screen and made-up data only.
+# After the suite from source it builds packages from the same commit: the release build with its fuses on, for
+# release-gate.spec; the .deb, installed, for release-gate.spec again; the proof build, for package-smoke.spec.
+# Each part runs when the one before it failed, and the job is red if any part is. Nothing is published, and every build
+# here holds the made-up site values of the repository (electron/src/main/site.ts).
+# Never move these jobs to a self-hosted runner: in a public repository a pull request from a fork can change this file.
+name: vibex-pca-fence
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['electron/**', '.github/workflows/vibex-pca-fence.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibex-pca-fence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-suite:
+    runs-on: ubuntu-24.04
+    # Measured on run 2: the whole of it takes about 20 minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # electron/scripts/release.sh --fence reads this step by its name (FENCE_RUN_STEPS in scripts/update-release.mjs).
+      - name: Run the suite and the package checks in a container, under Xvfb
+        run: |
+          mkdir -p .fence-out && chmod 777 .fence-out
+
+          cat > .fence-out/as-user.sh <<'SCRIPT'
+          set -u
+          part() { # name, then the command
+            name=$1; shift
+            if "$@" > "/out/$name.log" 2>&1; then echo "pass $name" >> /out/parts.txt; else echo "FAIL $name" >> /out/parts.txt; fi
+            [ -d test-results ] && mkdir -p "/out/results/$name" && cp -r test-results/. "/out/results/$name/" 2>/dev/null
+            return 0
+          }
+          screen() { xvfb-run -a --server-args="-screen 0 1600x1000x24" "$@"; }
+          cd /home/pwuser/repo/electron
+          export ELECTRON_DISABLE_SANDBOX=1 CI=1 CSC_IDENTITY_AUTO_DISCOVERY=false
+          npm ci --no-audit --no-fund || { echo "FAIL npm-ci" >> /out/parts.txt; exit 0; }
+          # A real Claude Code for the tests that read it (--version, mcp add, mcp list): no sign-in, no real config.
+          npm install -g --prefix /home/pwuser/.local --no-audit --no-fund @anthropic-ai/claude-code
+          export PATH=/home/pwuser/.local/bin:$PATH VIBEX_EXPECT_CLAUDE=1
+          claude --version
+          git config --global user.name fence && git config --global user.email fence@example.invalid
+          part typecheck npm run typecheck
+          part suite screen npm test
+          # The server chat through a real OpenSSH sshd, as this user on 127.0.0.1, with dash as /bin/sh, as on a team server.
+          part real-sshd sh tests/real-sshd.sh
+          cp -r screens /out/ 2>/dev/null
+          # What people install: the fuses on. The build script of the repo, with no switch.
+          part package-release npm run dist:dir
+          part gate-release env VIBEX_RELEASE_EXECUTABLE="$PWD/release/linux-unpacked/vibex-pca" xvfb-run -a npx playwright test tests/release-gate.spec.ts
+          part package-deb npx electron-builder --linux deb --x64 --publish never
+          # What a test can drive: the same package, with the switches and the inspector fuse on. RunAsNode stays off.
+          part package-proof npm run dist:proof
+          part smoke-proof env VIBEX_APP_EXECUTABLE="$PWD/release-proof/linux-unpacked/vibex-pca" xvfb-run -a npx playwright test tests/package-smoke.spec.ts
+          SCRIPT
+
+          cat > .fence-out/as-user-2.sh <<'SCRIPT'
+          set -u
+          cd /home/pwuser/repo/electron
+          export ELECTRON_DISABLE_SANDBOX=1 CI=1
+          if VIBEX_RELEASE_EXECUTABLE="/opt/Vibex PCA/vibex-pca" xvfb-run -a npx playwright test tests/release-gate.spec.ts > /out/gate-deb.log 2>&1; then echo "pass gate-deb" >> /out/parts.txt; else echo "FAIL gate-deb" >> /out/parts.txt; fi
+          SCRIPT
+
+          cat > .fence-out/as-root.sh <<'SCRIPT'
+          set -eu
+          apt-get update -qq && apt-get install -y -qq openssh-client openssh-server python3 git curl binutils xz-utils libarchive-tools >/dev/null && mkdir -p /run/sshd
+          # A real PowerShell for the tests of what Windows runs. If the download fails those tests say they were skipped.
+          if curl -fsSL -o /tmp/pwsh.tgz https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/powershell-7.5.4-linux-x64.tar.gz; then
+            mkdir -p /opt/pwsh && tar xzf /tmp/pwsh.tgz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh && ln -s /opt/pwsh/pwsh /usr/local/bin/pwsh
+            DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          else
+            echo "no PowerShell for this run"
+          fi
+          cp -r /src /home/pwuser/repo && chown -R pwuser /home/pwuser/repo
+          touch /out/parts.txt && chmod 666 /out/parts.txt
+          su pwuser -c 'bash /out/as-user.sh'
+          # The .deb as a person installs it, with its dependencies from apt.
+          deb=$(ls /home/pwuser/repo/electron/release/Vibex-PCA-*-linux-amd64.deb 2>/dev/null | head -n 1 || true)
+          if [ -n "$deb" ] && apt-get install -y -qq "$deb" > /out/install-deb.log 2>&1 && [ -x "/opt/Vibex PCA/vibex-pca" ]; then
+            echo "pass install-deb" >> /out/parts.txt
+            su pwuser -c 'bash /out/as-user-2.sh'
+          else
+            echo "FAIL install-deb" >> /out/parts.txt
+          fi
+          chmod -R a+rX /out
+          SCRIPT
+
+          docker run --rm --shm-size=1g -v "$PWD:/src:ro" -v "$PWD/.fence-out:/out" mcr.microsoft.com/playwright:v1.64.0-noble bash /out/as-root.sh
+          # Every part must have passed, and all nine must have run. A list with a part missing is no pass.
+          cat .fence-out/parts.txt
+          # 10 parts: the 9 before, and real-sshd (the server chat through a real sshd).
+          test "$(grep -c '^pass ' .fence-out/parts.txt)" = 10
+          ! grep -q '^FAIL ' .fence-out/parts.txt
+
+      - name: Print the result
+        if: always()
+        run: |
+          cat .fence-out/parts.txt || true
+          tail -25 .fence-out/package-deb.log .fence-out/install-deb.log || true
+          for log in suite gate-release gate-deb smoke-proof; do
+            echo "--- $log"
+            grep -E '^\s+[0-9]+ (passed|failed|skipped|did not run)|^\s+tests/.*spec' ".fence-out/$log.log" || true
+            tail -5 ".fence-out/$log.log" || true
+          done
+          # The error of each failed test, when the artifact upload is refused (made-up data only; cut to 60 lines each).
+          awk '/^  [0-9]+\) /{n=60} n>0{print; n--}' .fence-out/suite.log | head -300 || true
+
+      - name: Keep the logs and the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        # A refused upload (a full artifact store) must not turn the job red: the work above is the proof,
+        # and release.sh --fence judges those steps.
+        continue-on-error: true
+        with:
+          name: vibex-pca-fence-${{ github.run_number }}
+          # The folder's name starts with a dot, and a pattern skips such a folder without this.
+          include-hidden-files: true
+          path: |
+            .fence-out/*.log
+            .fence-out/parts.txt
+            .fence-out/screens
+            .fence-out/results/**/error-context.md
+          retention-days: 3
+
+  # The Windows installer, built on Linux under Wine. It proves the build only: nothing here runs on Windows.
+  # It needs no other job, so a red test does not stop it.
+  # It goes to a run artifact and never to the update feed: no latest.yml and no blockmap leave the container.
+  windows-installer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # electron/scripts/release.sh --fence reads this step by its name (FENCE_RUN_STEPS in scripts/update-release.mjs).
+      - name: Cross-build the NSIS installer and read what it holds
+        run: |
+          mkdir -p .win-out && chmod 777 .win-out
+          # These numbers say what this image costs on the runner's disk.
+          df -BM . | tail -n 1
+          docker system df
+          docker pull -q electronuserland/builder:wine
+          docker image inspect --format 'builder:wine is {{.Size}} bytes' electronuserland/builder:wine
+          df -BM . | tail -n 1
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/.win-out:/out" -e CSC_IDENTITY_AUTO_DISCOVERY=false -e ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+            electronuserland/builder:wine bash /src/electron/scripts/fence-windows-installer.sh
+          cat .win-out/SHA256.txt
+          ! ls .win-out | grep -E 'latest|blockmap'
+
+      # The proof and the hash only. No one installs this exe, which Wine built, and it never becomes a run artifact:
+      # anyone can download a run artifact of a public repository.
+      - name: Keep the proof of the installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: vibex-pca-windows-${{ github.run_number }}
+          # The folder's name starts with a dot, and a pattern skips such a folder without this.
+          include-hidden-files: true
+          path: |
+            .win-out/SHA256.txt
+            .win-out/proof.txt
+          retention-days: 3
+
+      - name: Give the room back
+        if: always()
+        run: |
+          df -BM . | tail -n 1
+          docker rmi electronuserland/builder:wine >/dev/null 2>&1 || true
+          df -BM . | tail -n 1

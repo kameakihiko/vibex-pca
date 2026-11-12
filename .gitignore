@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+# The real addresses of a team (electron/src/main/site.ts). Never commit them.
+site.local.json
+release.env
+*.pem
+*.key

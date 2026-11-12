@@ -1,0 +1,499 @@
+# Vibex PCA edition (electron/) for Windows and Linux.
+# First a job builds the installers and keeps them in this run's cache. Then a second job tests them, and a red test cannot
+# take them back. On a tag, a third job puts them on a DRAFT GitHub Release of that tag. Nothing here goes to the update feed:
+# the owner's electron/scripts/release.sh downloads the draft release, judges, signs and publishes.
+#
+# No installer is a run artifact: anyone can download a run artifact of a public repository, and an installer is large. A
+# cache of a tag run cannot be read from a pull request, and a draft release shows only to people who can write to the repository. Only the small
+# test reports are artifacts, for 3 days, and never those of a tag.
+#
+# The site values (the addresses of one team's servers, electron/src/main/site.ts) are no part of the source. A tag build
+# reads them from the repository secret VIBEX_PCA_SITE (the text of a site.local.json; electron/site.example.json shows its
+# shape). Every other run builds with the made-up values, and a pull request from a fork gets no secret at all.
+#
+# All jobs run on GitHub-hosted runners. Never add a self-hosted runner to a job that a pull request starts: in a public
+# repository a pull request from a fork can change this file.
+#
+# How to get an installer:
+# 1. A pull request into main that touches electron/ (made-up site values).
+# 2. A tag vibex-pca-v*. electron/scripts/release.sh makes it, and waits for this run. A tag runs the installers and the
+#    short tests of the packages: not the long suites.
+# 3. The Run button (workflow_dispatch), with made-up site values.
+name: vibex-pca
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['electron/**', '.github/workflows/vibex-pca.yml']
+  push:
+    tags: ['vibex-pca-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibex-pca-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    # One install of dependencies and one package: about 10 minutes on Windows.
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+        working-directory: electron
+    env:
+      # No signing in this build: electron-builder must not look for a certificate.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Only a tag is a release of the team: it alone gets the real addresses. Each value is hidden in this log.
+      - name: Take the site values (a tag only)
+        if: startsWith(github.ref, 'refs/tags/vibex-pca-v')
+        env:
+          VIBEX_PCA_SITE: ${{ secrets.VIBEX_PCA_SITE }}
+        run: |
+          [ -n "$VIBEX_PCA_SITE" ] || { echo "::error::the secret VIBEX_PCA_SITE is empty, so a release would hold made-up addresses."; exit 1; }
+          printf '%s' "$VIBEX_PCA_SITE" > site.local.json
+          node -e 'const s = JSON.parse(require("fs").readFileSync("site.local.json", "utf8")); for (const v of Object.values(s)) if (typeof v === "string" && v) console.log("::add-mask::" + v); const u = new URL(s.feedUrl); console.log("::add-mask::" + u.host); console.log("::add-mask::" + u.pathname);'
+          node scripts/update-release.mjs set-feed
+
+      - name: Build the release code
+        run: npm run build
+
+      # What reads other programs' bytes in the helper, with sanitizers. It holds no Windows code.
+      - name: Test the core of the askpass helper
+        if: runner.os == 'Linux'
+        run: |
+          cc -std=gnu11 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -o "$RUNNER_TEMP/core-test" native/askpass-win/core-test.c
+          "$RUNNER_TEMP/core-test"
+
+      # From source, with one exact compiler. Never a committed binary. Its size and SHA-256 are in this log.
+      - name: Fetch the pinned compiler (Windows)
+        if: runner.os == 'Windows'
+        run: bash native/askpass-win/toolchain-windows.sh
+
+      - name: Build the askpass helper (Windows)
+        if: runner.os == 'Windows'
+        run: bash native/askpass-win/build.sh
+
+      - name: Build the Windows Hello helper (Windows)
+        if: runner.os == 'Windows'
+        run: bash native/presence-win/build.sh
+
+      - name: Build the Windows installer (NSIS)
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Build the Linux packages (AppImage and deb)
+        if: runner.os == 'Linux'
+        run: npx electron-builder --linux AppImage deb --x64 --publish never
+
+      # An AppImage opens only on Linux, so the files the gate must read leave it here, marked with its hash.
+      - name: Take out of the AppImage what the gate reads (Linux)
+        if: runner.os == 'Linux'
+        run: node scripts/update-release.mjs appimage-gate release
+
+      # The yml, blockmap and appimage-gate files are what scripts/release.sh downloads, from the draft release of a tag. The gate
+      # there reads those files, and no other folder. A cache cannot be empty with no error, so the step before it checks.
+      - name: Check the installers are there
+        run: |
+          ls release/*.exe release/*.deb release/*.AppImage 2>/dev/null | grep -q . || { echo "::error::no installer in release/"; exit 1; }
+          ls release/latest.yml release/latest-linux.yml 2>/dev/null | grep -q . || { echo "::error::no latest.yml or latest-linux.yml in release/"; exit 1; }
+          du -ch release/*.exe release/*.deb release/*.AppImage release/*.blockmap release/latest*.yml release/appimage-gate 2>/dev/null | tail -n 1
+
+      - name: Keep the installers for the next jobs
+        uses: actions/cache/save@v4
+        with:
+          key: vibex-pca-installers-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          enableCrossOsArchive: true
+          path: |
+            electron/release/*.exe
+            electron/release/*.deb
+            electron/release/*.AppImage
+            electron/release/*.blockmap
+            electron/release/latest.yml
+            electron/release/latest-linux.yml
+            electron/release/appimage-gate/
+
+      # After the upload: these say what is wrong with the files and cannot stop them from being there.
+      # The same gate as on the owner's Mac, on the same files, so a release that would be refused shows in each pull request.
+      - name: Run the release gate on the installers
+        run: node scripts/update-release.mjs gate release "$(node scripts/update-release.mjs feed)" "$(node scripts/update-release.mjs pinned)"
+
+      - name: Check the PCA files are in the build
+        run: |
+          dir=$(ls -d release/*-unpacked | head -n 1)
+          for f in resources/pca/managed-settings.json resources/pca/README.md resources/pca/skills/linear-end-of-session/SKILL.md resources/pca/skills/pca-memory-and-notes/SKILL.md resources/app.asar; do
+            test -s "$dir/$f" || { echo "::error::$f is missing from $dir"; exit 1; }
+          done
+          if [ "$RUNNER_OS" = Windows ]; then node scripts/check-askpass-exe.cjs "$dir/resources/vibex-askpass.exe"; fi
+
+      - name: Check installer size (kill criterion 4 in electron/PROOF.md)
+        run: |
+          for f in release/*.exe release/*.deb release/*.AppImage; do
+            [ -f "$f" ] || continue
+            size=$(wc -c < "$f")
+            echo "$(basename "$f"): $((size / 1048576)) MB"
+            [ "$size" -lt 209715200 ] || { echo "::error::$f is 200 MB or larger"; exit 1; }
+          done
+
+  tests:
+    needs: installers
+    # Also when one installer failed: the other one and the source still have something to say.
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    # The installed app, the packaged smoke test and one whole suite from source (about 25 minutes on Windows). A manual run adds
+    # the whole suite on the package. A tag, which is a release, runs only the short tests of the packages.
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+        working-directory: electron
+    env:
+      VIBEX_EXPECT_CLAUDE: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Only a tag is a release of the team: it alone gets the real addresses. Each value is hidden in this log.
+      - name: Take the site values (a tag only)
+        if: startsWith(github.ref, 'refs/tags/vibex-pca-v')
+        env:
+          VIBEX_PCA_SITE: ${{ secrets.VIBEX_PCA_SITE }}
+        run: |
+          [ -n "$VIBEX_PCA_SITE" ] || { echo "::error::the secret VIBEX_PCA_SITE is empty, so a release would hold made-up addresses."; exit 1; }
+          printf '%s' "$VIBEX_PCA_SITE" > site.local.json
+          node -e 'const s = JSON.parse(require("fs").readFileSync("site.local.json", "utf8")); for (const v of Object.values(s)) if (typeof v === "string" && v) console.log("::add-mask::" + v); const u = new URL(s.feedUrl); console.log("::add-mask::" + u.host); console.log("::add-mask::" + u.pathname);'
+          node scripts/update-release.mjs set-feed
+
+      # From this run's cache. A re-run of only this job takes the newest attempt of the installers job.
+      - name: Fetch the installers of this run
+        id: fetched
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          key: vibex-pca-installers-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vibex-pca-installers-${{ runner.os }}-${{ github.run_id }}-
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+          path: |
+            electron/release/*.exe
+            electron/release/*.deb
+            electron/release/*.AppImage
+            electron/release/*.blockmap
+            electron/release/latest.yml
+            electron/release/latest-linux.yml
+            electron/release/appimage-gate/
+
+      - name: Install Claude Code on Linux (npm)
+        if: runner.os == 'Linux'
+        run: npm install -g @anthropic-ai/claude-code@2.1.296
+
+      # Windows: the native claude.exe, Anthropic's default there. The app registers itself with it (test 18).
+      - name: Install Claude Code on Windows (native installer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ([scriptblock]::Create((Invoke-RestMethod https://claude.ai/install.ps1)))
+          $bin = Join-Path $env:USERPROFILE '.local\bin'
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & (Join-Path $bin 'claude.exe') --version
+
+      - name: Allow Chromium's sandbox on Ubuntu 24.04
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get install -y openbox libarchive-tools
+
+      - name: Type check
+        if: ${{ !cancelled() }}
+        run: npm run typecheck
+
+      - name: Fetch the pinned compiler (Windows)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        run: bash native/askpass-win/toolchain-windows.sh
+
+      # A package and a run from source both read this file.
+      - name: Build the askpass helper (Windows)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        run: bash native/askpass-win/build.sh
+
+      - name: Build the Windows Hello helper (Windows)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        run: bash native/presence-win/build.sh
+
+      - name: Install the Windows installer silently and find the app
+        id: installed-win
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.fetched.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem release -Filter 'Vibex-PCA-*-win-x64.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'no NSIS installer in the artifact' }
+          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Vibex PCA\Vibex PCA.exe'
+          if (-not (Test-Path $exe)) { throw "installed app not found at $exe" }
+          "VIBEX_RELEASE_EXECUTABLE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install the deb and check the AppImage
+        id: installed-linux
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.fetched.outcome == 'success' }}
+        run: |
+          sudo apt-get install -y ./release/Vibex-PCA-*-linux-amd64.deb
+          exe="/opt/Vibex PCA/vibex-pca"
+          test -x "$exe"
+          test -s "$(ls release/Vibex-PCA-*-linux-x86_64.AppImage)"
+          echo "VIBEX_RELEASE_EXECUTABLE=$exe" >> "$GITHUB_ENV"
+
+      # The installed release checks the real feed 10 s after each start, and a newer version there would install at its quit.
+      - name: Keep the packaged tests off the real feed (Windows)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $feedHost = ([uri](node scripts/update-release.mjs feed)).Host
+          if (-not $feedHost) { throw 'no feed address to keep the tests away from' }
+          Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "127.0.0.1 $feedHost"
+
+      # What people install: fuses on, test switches off. Playwright cannot drive it, so this looks from outside.
+      # Users have Ubuntu's default AppArmor rule; the deb ships its own profile, so the rule goes back on for this.
+      - name: Test the installed app is locked
+        if: ${{ !cancelled() && env.VIBEX_RELEASE_EXECUTABLE != '' }}
+        env:
+          VIBEX_TEST_OUT: test-output/gate
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+            xvfb-run -a npx playwright test tests/release-gate.spec.ts || status=$?
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            exit ${status:-0}
+          fi
+          npx playwright test tests/release-gate.spec.ts
+
+      # On a person's PC Git's ssh is not on PATH (only its cmd folder is), and ssh.exe of Windows is. Git Bash puts its own first.
+      - name: Test the askpass helper on the ssh of Windows
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        env:
+          VIBEX_TEST_OUT: test-output/askpass
+        run: |
+          echo "ssh with the PATH of Git Bash: $(command -v ssh) $(ssh -V 2>&1)"
+          export PATH="/c/Windows/System32/OpenSSH:$PATH"
+          ssh -V
+          npx playwright test tests/askpass-win.spec.ts
+
+      # The same package with test switches and the inspector fuse on. RunAsNode stays off, which is what a closed tab needs here.
+      - name: Build the packaged proof app (never released)
+        if: ${{ !cancelled() }}
+        run: |
+          npm run dist:proof
+          # The Windows form of the path: pwsh and Node read it as it is.
+          case "$RUNNER_OS" in
+            Windows) exe="$(pwd -W)/release-proof/win-unpacked/Vibex PCA.exe" ;;
+            *) exe="$PWD/release-proof/linux-unpacked/vibex-pca" ;;
+          esac
+          test -f "$exe"
+          echo "VIBEX_APP_EXECUTABLE=$exe" >> "$GITHUB_ENV"
+
+      - name: Close a live tab on the package
+        id: smoke
+        if: ${{ !cancelled() && env.VIBEX_APP_EXECUTABLE != '' }}
+        env:
+          VIBEX_TEST_OUT: test-output/smoke
+          # What the app says on its stderr goes in this log.
+          DEBUG: 'pw:browser*'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npx playwright test tests/package-smoke.spec.ts; else npx playwright test tests/package-smoke.spec.ts; fi
+
+      # Only after a red smoke test: the package with no Playwright, what is on the screen, and what Windows logged.
+      - name: Say why the package did not work (Windows)
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.smoke.outcome == 'failure' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $out = New-Item -ItemType Directory -Force -Path 'test-output/probe'
+          $env:VIBEX_TEST = '1'
+          $env:VIBEX_MCP_PORT = '0'
+          $env:VIBEX_USER_DATA = Join-Path $out 'data'
+          $env:CLAUDE_CONFIG_DIR = Join-Path $out 'claude-config'
+          $env:ELECTRON_ENABLE_LOGGING = '1'
+          $p = Start-Process -FilePath $env:VIBEX_APP_EXECUTABLE -PassThru -RedirectStandardOutput (Join-Path $out 'stdout.txt') -RedirectStandardError (Join-Path $out 'stderr.txt')
+          Start-Sleep -Seconds 30
+          $p.Refresh()
+          "alive after 30 s: $(-not $p.HasExited)  exit: $(if ($p.HasExited) { $p.ExitCode })  window: '$($p.MainWindowTitle)'"
+          Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { "window: $($_.ProcessName) '$($_.MainWindowTitle)'" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+          [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+          $bitmap.Save((Join-Path $out 'screen.png'))
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          foreach ($f in 'stdout.txt', 'stderr.txt', 'data/vibex-errors.log') { $t = Join-Path $out $f; if (Test-Path $t) { "--- $f"; Get-Content $t -Tail 60 } }
+          "--- Application log"
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 1, 2; StartTime = (Get-Date).AddMinutes(-10) } -MaxEvents 8 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message.Substring(0, [Math]::Min(600, $_.Message.Length)) }
+
+      - name: Test the whole suite on the package (manual run)
+        if: ${{ !cancelled() && env.VIBEX_APP_EXECUTABLE != '' && github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then export PATH="/c/Windows/System32/OpenSSH:$PATH"; fi
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npx playwright test; else npx playwright test; fi
+
+      - name: Test from source
+        if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          VIBEX_APP_EXECUTABLE: ''
+          VIBEX_RELEASE_EXECUTABLE: ''
+          VIBEX_TEST_OUT: test-output/source
+        run: |
+          npm run build
+          if [ "$RUNNER_OS" = Windows ]; then export PATH="/c/Windows/System32/OpenSSH:$PATH"; fi
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npx playwright test; else npx playwright test; fi
+
+      # The hold of a Go runs with the real window focus at least once. A runner with no focus says so with a warning.
+      - name: Go checks with a real focus
+        if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          VIBEX_APP_EXECUTABLE: ''
+          VIBEX_RELEASE_EXECUTABLE: ''
+          VIBEX_TEST_OUT: test-output/go
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            GO_REAL_FOCUS=1 xvfb-run -a sh -c 'openbox & npx playwright test tests/agents-go.spec.ts -g "Go:"'
+          else
+            GO_REAL_FOCUS=1 npx playwright test tests/agents-go.spec.ts -g "Go:"
+          fi
+
+      # Report only: an AppImage has no AppArmor profile, so on stock Ubuntu 24.04 it may refuse to start.
+      - name: Try to start the AppImage (report only)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.fetched.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          appimage=$(ls release/Vibex-PCA-*-linux-x86_64.AppImage)
+          chmod +x "$appimage"
+          set +e
+          timeout 20 xvfb-run -a "$appimage" --appimage-extract-and-run > appimage.log 2>&1
+          code=$?
+          tail -20 appimage.log
+          if [ "$code" = 124 ]; then echo "AppImage stayed up for 20 s: it starts."; exit 0; fi
+          echo "::warning::AppImage exited with code $code on stock Ubuntu settings"; exit 1
+
+      # Never of a tag: that build holds the real site values, and anyone can download a run artifact of a public repository.
+      - name: Upload screenshots and test report
+        if: ${{ always() && !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibex-pca-tests-${{ runner.os }}
+          path: |
+            electron/screens/
+            electron/test-output/
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # Only on a tag: the installers of this run go to a DRAFT release of the tag, which release.sh downloads. This job alone holds a
+  # write token, and it runs no code of the repo: no checkout, no npm. It takes the bytes the installers job made, as they are.
+  # It never touches the update feed. A release of another run is never changed: a re-run of the same run may replace its files.
+  release-assets:
+    needs: installers
+    if: ${{ !cancelled() && needs.installers.result == 'success' && startsWith(github.ref, 'refs/tags/vibex-pca-v') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the Windows installer of this run
+        uses: actions/cache/restore@v4
+        with:
+          key: vibex-pca-installers-Windows-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vibex-pca-installers-Windows-${{ github.run_id }}-
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+          path: |
+            electron/release/*.exe
+            electron/release/*.deb
+            electron/release/*.AppImage
+            electron/release/*.blockmap
+            electron/release/latest.yml
+            electron/release/latest-linux.yml
+            electron/release/appimage-gate/
+
+      - name: Fetch the Linux packages of this run
+        uses: actions/cache/restore@v4
+        with:
+          key: vibex-pca-installers-Linux-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vibex-pca-installers-Linux-${{ github.run_id }}-
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+          path: |
+            electron/release/*.exe
+            electron/release/*.deb
+            electron/release/*.AppImage
+            electron/release/*.blockmap
+            electron/release/latest.yml
+            electron/release/latest-linux.yml
+            electron/release/appimage-gate/
+
+      - name: Put the installers on a draft release of the tag
+        working-directory: electron/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          RUN: ${{ github.run_id }}
+        shell: bash
+        # tests/release.spec.ts runs this text with a made-up gh.
+        run: |
+          set -euo pipefail
+          tar -czf appimage-gate.tar.gz appimage-gate
+          files=()
+          for pattern in '*.exe' '*.deb' '*.AppImage' '*.blockmap' latest.yml latest-linux.yml appimage-gate.tar.gz; do
+            found=$(compgen -G "$pattern" || true)
+            [ -n "$found" ] || { echo "::error::no $pattern came from the installers job."; exit 1; }
+            while IFS= read -r file; do files+=("$file"); done <<<"$found"
+          done
+          mark="Built by run $RUN of vibex-pca.yml, from the tag $TAG."
+          if body=$(gh release view "$TAG" --json body --jq .body 2>/dev/null); then
+            [[ "$body" == *"$mark"* ]] || { echo "::error::the release $TAG exists, and another run made it. It stays as it is."; exit 1; }
+          else
+            gh release create "$TAG" --draft --verify-tag --title "Vibex PCA ${TAG#vibex-pca-v}" \
+              --notes "$mark A draft: electron/scripts/release.sh downloads it. People update from the feed, not from here."
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+          # Read back: each file is on the release, at its size.
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"')
+          for file in "${files[@]}"; do
+            size=$(wc -c < "$file" | tr -d ' ')
+            grep -qxF "$file $size" <<<"$assets" || { echo "::error::$file is not on the release at $size bytes."; exit 1; }
+            echo "On the draft release $TAG: $file, $((size / 1048576)) MB"
+          done
