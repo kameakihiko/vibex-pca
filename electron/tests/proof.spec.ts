@@ -242,8 +242,14 @@ test('12. start time and memory stay inside the kill criteria', async () => {
   const metrics = { platform: process.platform, packaged: !!process.env.VIBEX_APP_EXECUTABLE, readyMs, memoryMb };
   writeFileSync(path.join(shots, `metrics-${process.platform}-${metrics.packaged ? 'installed' : 'source'}.json`), JSON.stringify(metrics, null, 2));
   test.info().annotations.push({ type: 'metrics', description: JSON.stringify(metrics) });
+  // PROOF ONLY, not for main: the measure by process, and the size of the computer, in the log and in the failure text.
+  const parts = await app.evaluate(({ app: a }) => a.getAppMetrics().map((m) => ({ type: m.type, name: m.name ?? m.serviceName ?? '', workingMb: Math.round(m.memory.workingSetSize / 1024), privateMb: m.memory.privateBytes === undefined ? null : Math.round(m.memory.privateBytes / 1024) })));
+  const osModule = await import('node:os');
+  const windows = await app.evaluate(({ BrowserWindow, webContents }) => ({ windows: BrowserWindow.getAllWindows().length, contents: webContents.getAllWebContents().length }));
+  const detail = JSON.stringify({ memoryMb, cpus: osModule.cpus().length, totalGb: Math.round(osModule.totalmem() / 2 ** 30), freeGb: Math.round(osModule.freemem() / 2 ** 30), ...windows, byType: parts.reduce((sum: Record<string, number>, part) => ({ ...sum, [part.type]: (sum[part.type] ?? 0) + part.workingMb }), {}), parts });
+  console.log(`VIBEX-MEMORY ${detail}`);
   expect(readyMs).toBeLessThan(15_000);
-  expect(memoryMb).toBeLessThan(800);
+  expect(memoryMb, detail).toBeLessThan(800);
 });
 
 test('13. every command is in the menu bar with its shortcut', async () => {

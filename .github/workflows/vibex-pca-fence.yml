@@ -108,6 +108,7 @@ jobs:
         if: always()
         run: |
           cat .fence-out/parts.txt || true
+          grep -ah VIBEX-MEMORY .fence-out/suite.log || true
           tail -25 .fence-out/package-deb.log .fence-out/install-deb.log || true
           for log in suite gate-release gate-deb smoke-proof; do
             echo "--- $log"

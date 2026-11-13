@@ -232,7 +232,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & ([scriptblock]::Create((Invoke-RestMethod https://claude.ai/install.ps1)))
+          # PROOF ONLY, not for main: the version the Linux job pins, to see whether test 18 passes with it.
+          & ([scriptblock]::Create((Invoke-RestMethod https://claude.ai/install.ps1))) 2.1.296
           $bin = Join-Path $env:USERPROFILE '.local\bin'
           $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           & (Join-Path $bin 'claude.exe') --version
