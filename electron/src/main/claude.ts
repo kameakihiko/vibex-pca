@@ -57,21 +57,22 @@ export function mcpEntry(port: number, headersHelper: string) {
 }
 
 /// The first read of the key by another process, on Windows. The key file is encrypted with a key that Chromium keeps in
-/// the profile's `Local State` file, and that file is not on disk yet when the app has written the key file. The first run
-/// of `--mcp-headers` then cannot decrypt the key file, so Claude Code connects with no key and is refused. Measured on a
-/// Windows runner: minutes after the start the file was still not there, the first run of the helper failed to decrypt,
-/// the file was there 2 s later, and every run after that gave the key. So the app runs its own helper until it gives a
-/// key, before it says "registered". The answer is only tested here: it is not kept and not logged.
-const FIRST_KEY_READ_TRIES = 8;
+/// the profile's `Local State` file, and Chromium writes that file some seconds after it made the key, not at once. On the
+/// first start of a new profile a run of `--mcp-headers` in those seconds cannot decrypt the key file, so Claude Code
+/// connects with no key and is refused. Measured on a Windows runner, three times: about 16 s after the start the file was
+/// not there and the helper failed to decrypt; the file was there 2 s later, and every run after that gave the key. A
+/// later start finds the file on disk, and the first try passes. So the app runs its own helper until it gives a key,
+/// before it says "registered". The answer is only tested here: it is not kept and not logged.
+const FIRST_KEY_READ_LIMIT_MS = 30_000;
 async function firstKeyRead(): Promise<boolean> {
   if (process.platform !== 'win32') return true;
   const args = [...(app.isPackaged ? [] : [app.getAppPath()]), '--mcp-headers'];
-  for (let i = 0; i < FIRST_KEY_READ_TRIES; i++) {
+  for (const end = Date.now() + FIRST_KEY_READ_LIMIT_MS; ;) {
     const answer = await run(process.execPath, args);
     if (answer.ok && /"Authorization":\s*"Bearer [^"]+"/.test(answer.output)) return true;
+    if (Date.now() >= end) return false;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  return false;
 }
 
 /// Registers the MCP server for Claude Code at user scope, as macOS Vibex does on each launch, but with no

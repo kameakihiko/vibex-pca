@@ -145,7 +145,8 @@ test('5. Claude Code that an installer puts in ~/.local/bin while the app runs: 
   }
   await check().click();
   await expect(page.locator('[data-setup="claude"]')).toHaveAttribute('data-status', 'ready');
-  await expect(page.locator('#mcp-text')).toHaveText('MCP ready');
+  // On Windows a new profile says "MCP ready" only after another process could read the key (src/main/claude.ts).
+  await expect(page.locator('#mcp-text')).toHaveText('MCP ready', { timeout: 60_000 });
   // The left column works now: a new tab, in front, with the full path, in a shell that has the old PATH.
   await expect(pane('agent').locator('.tab')).toHaveCount(2);
   await expect(pane('agent').locator('.tab[aria-selected="true"]')).toHaveCount(1);
