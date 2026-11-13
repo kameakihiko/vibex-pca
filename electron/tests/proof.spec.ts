@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { startSite, startSshServer, tempDir, firstWindow } from './fixtures';
@@ -237,13 +237,29 @@ test('11. an ended ssh connection reconnects with Enter', async () => {
 
 // Kill criteria for Electron versus Tauri, written in electron/PROOF.md before the first CI run.
 test('12. start time and memory stay inside the kill criteria', async () => {
-  const kb = await app.evaluate(({ app: a }) => a.getAppMetrics().reduce((sum, m) => sum + m.memory.workingSetSize, 0));
-  const memoryMb = Math.round(kb / 1024);
-  const metrics = { platform: process.platform, packaged: !!process.env.VIBEX_APP_EXECUTABLE, readyMs, memoryMb };
+  // The memory that is the app's own: private memory. A working set also counts the pages a process shares, and each process
+  // of the app counts the same shared pages again (Chromium's code, the maps of the GPU process), so that sum says more than
+  // the app takes, by an amount that changes with the computer. Windows gives the private bytes of a process; on Linux
+  // /proc gives them. Where neither is there (macOS), or one process cannot be read, the working set is judged, which is stricter.
+  const parts = await app.evaluate(({ app: a }) => a.getAppMetrics().map((m) => ({ pid: m.pid, workingKb: m.memory.workingSetSize, privateKb: m.memory.privateBytes ?? null })));
+  const linuxPrivateKb = (pid: number): number | null => {
+    try {
+      const lines = [...readFileSync(`/proc/${pid}/smaps_rollup`, 'utf8').matchAll(/^Private_(?:Clean|Dirty|Hugetlb):\s+(\d+) kB$/gm)];
+      return lines.length ? lines.reduce((sum, line) => sum + Number(line[1]), 0) : null;
+    } catch {
+      return null;
+    }
+  };
+  const own = parts.map((part) => part.privateKb ?? (process.platform === 'linux' ? linuxPrivateKb(part.pid) : null));
+  const measure = parts.length > 0 && own.every((kb) => kb !== null) ? 'private' : 'working set';
+  const workingSetMb = Math.round(parts.reduce((sum, part) => sum + part.workingKb, 0) / 1024);
+  const memoryMb = measure === 'private' ? Math.round(own.reduce((sum: number, kb) => sum + (kb ?? 0), 0) / 1024) : workingSetMb;
+  const metrics = { platform: process.platform, packaged: !!process.env.VIBEX_APP_EXECUTABLE, readyMs, memoryMb, measure, workingSetMb, processes: parts.length };
+  console.log(`metrics ${JSON.stringify(metrics)}`);
   writeFileSync(path.join(shots, `metrics-${process.platform}-${metrics.packaged ? 'installed' : 'source'}.json`), JSON.stringify(metrics, null, 2));
   test.info().annotations.push({ type: 'metrics', description: JSON.stringify(metrics) });
   expect(readyMs).toBeLessThan(15_000);
-  expect(memoryMb).toBeLessThan(800);
+  expect(memoryMb, JSON.stringify(metrics)).toBeLessThan(800);
 });
 
 test('13. every command is in the menu bar with its shortcut', async () => {

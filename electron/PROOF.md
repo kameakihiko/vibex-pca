@@ -28,7 +28,10 @@ Each one is step 2 or 3 of the port plan.
 
 1. A check from the table above cannot pass on GitHub `windows-latest` after 3 fix rounds.
 2. Time from launch to a ready window is 15 s or more on a CI runner (test 12).
-3. The app uses 800 MB of memory or more with one terminal, one ssh tab and one page open (test 12).
+3. The app uses 800 MB of memory or more with one terminal, one ssh tab and one page open (test 12). The measure is
+   private memory, summed over the app's processes: the private bytes on Windows, the Private lines of `/proc` on Linux.
+   A working set counts shared pages once for each process, so its sum changes with the computer; it is recorded beside
+   the judged number, and it is the judged number where private memory cannot be read.
    VS Code with a terminal is about 500-800 MB, so this is the ceiling of "normal" for the team.
 4. An installer is 200 MB or larger (CI step "Check installer size").
 5. The PTY needs a C++ compiler on the user's machine (today: no, node-pty ships prebuilt binaries).
