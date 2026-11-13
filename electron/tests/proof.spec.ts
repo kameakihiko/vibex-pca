@@ -321,7 +321,11 @@ test('17. the side browser refuses local files and other apps\' links', async ()
 });
 
 test('18. Claude Code reaches the MCP server through the registration (key fetched from the system store)', async () => {
-  const claudeStatus: string = await app.evaluate(() => (globalThis as any).__vibexTest.status.claude);
+  // The registration runs beside the window: two `claude mcp` runs, and on Windows the first read of the key, which on a new
+  // profile waits for Chromium to write its key file (src/main/claude.ts). This test starts about 16 s after the app.
+  const status = () => app.evaluate(() => (globalThis as any).__vibexTest.status.claude as string);
+  await expect.poll(status, { timeout: 90_000 }).not.toBe('registering with Claude Code');
+  const claudeStatus: string = await status();
   test.info().annotations.push({ type: 'claude registration', description: claudeStatus });
   if (claudeStatus !== 'registered') {
     // Windows CI has the native claude.exe and DPAPI, so there it must register.

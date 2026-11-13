@@ -56,6 +56,25 @@ export function mcpEntry(port: number, headersHelper: string) {
   return { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { 'X-Vibex-Window': '${VIBEX_WINDOW:-}' }, headersHelper };
 }
 
+/// The first read of the key by another process, on Windows. The key file is encrypted with a key that Chromium keeps in
+/// the profile's `Local State` file, and Chromium writes that file some seconds after it made the key, not at once. On the
+/// first start of a new profile a run of `--mcp-headers` in those seconds cannot decrypt the key file, so Claude Code
+/// connects with no key and is refused. Measured on a Windows runner, three times: about 16 s after the start the file was
+/// not there and the helper failed to decrypt; the file was there 2 s later, and every run after that gave the key. A
+/// later start finds the file on disk, and the first try passes. So the app runs its own helper until it gives a key,
+/// before it says "registered". The answer is only tested here: it is not kept and not logged.
+const FIRST_KEY_READ_LIMIT_MS = 30_000;
+async function firstKeyRead(): Promise<boolean> {
+  if (process.platform !== 'win32') return true;
+  const args = [...(app.isPackaged ? [] : [app.getAppPath()]), '--mcp-headers'];
+  for (const end = Date.now() + FIRST_KEY_READ_LIMIT_MS; ;) {
+    const answer = await run(process.execPath, args);
+    if (answer.ok && /"Authorization":\s*"Bearer [^"]+"/.test(answer.output)) return true;
+    if (Date.now() >= end) return false;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
 /// Registers the MCP server for Claude Code at user scope, as macOS Vibex does on each launch, but with no
 /// key in Claude's config: Claude asks this app for the header each time it connects.
 export async function registerWithClaude(port: number, store: TokenStore): Promise<string> {
@@ -65,5 +84,6 @@ export async function registerWithClaude(port: number, store: TokenStore): Promi
   const entry = JSON.stringify(mcpEntry(port, headersHelperCommand()));
   await run(claude, ['mcp', 'remove', '--scope', 'user', SERVER_NAME]);
   const added = await run(claude, ['mcp', 'add-json', '--scope', 'user', SERVER_NAME, entry]);
-  return added.ok ? 'registered' : `not registered: ${added.output.slice(0, 200)}`;
+  if (!added.ok) return `not registered: ${added.output.slice(0, 200)}`;
+  return (await firstKeyRead()) ? 'registered' : 'not registered: the MCP key could not be read back from the system store';
 }
