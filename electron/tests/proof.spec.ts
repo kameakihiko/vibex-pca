@@ -338,7 +338,22 @@ test('18. Claude Code reaches the MCP server through the registration (key fetch
       try { const o = JSON.parse(out); parsed = `JSON, keys ${Object.keys(o).join(',')}, Authorization ${typeof o.Authorization === 'string' && o.Authorization.startsWith('Bearer ') ? `Bearer + ${o.Authorization.length - 7} characters` : 'missing'}`; } catch { /* stays */ }
       say(label, { status: r.status, signal: r.signal, error: r.error ? String(r.error) : null, ms, stdoutBytes: out.length, parsed, stderr: mask(String(r.stderr ?? '')) });
     };
+    const state = (label: string) => { const f = path.join(profile, 'Local State'); say(`Local State ${label}`, fs.existsSync(f) ? { bytes: fs.statSync(f).size, modified: fs.statSync(f).mtime.toISOString(), hasKey: fs.readFileSync(f, 'utf8').includes('encrypted_key') } : 'not there'); };
+    say('now', new Date().toISOString());
+    state('before anything');
+    {
+      // As the test did before: Claude first, with nothing run before it.
+      const r = spawnSync(findClaude()!, ['mcp', 'list'], { env, encoding: 'utf8', timeout: 90_000, windowsHide: true });
+      say('claude mcp list, first', { status: r.status, stdout: mask(String(r.stdout ?? '')), stderr: mask(String(r.stderr ?? '')) });
+      state('after the first list');
+    }
     if (helper) {
+      for (let i = 1; i <= 4; i++) {
+        const at = Date.now();
+        report(`helper, try ${i}`, spawnSync(helper, [], { shell: true, env, encoding: 'utf8', timeout: 60_000, windowsHide: true }), Date.now() - at);
+        state(`after try ${i}`);
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
       for (const [label, file, args, extra] of [
         ['helper through the default shell', helper, [], { shell: true }],
         ['helper through bash', 'bash', ['-c', helper], {}],
