@@ -37,12 +37,15 @@ export function loadMcpToken(): { token: string; store: TokenStore } {
 
 /// The stored key without creating one: for `--mcp-headers`, which Claude Code runs to get the header.
 export function readStoredToken(): string | null {
-  if (!osStoreAvailable()) return null;
+  // PROOF ONLY, not for main: why no key came back, on stderr.
+  const why = (text: string) => { try { process.stderr.write(`VIBEX-KEY-WHY ${text}; userData=${app.getPath('userData')}; localState=${existsSync(path.join(app.getPath('userData'), 'Local State'))}\n`); } catch { /* no stderr */ } };
+  if (!osStoreAvailable()) { why(`store not available (isEncryptionAvailable=${safeStorage.isEncryptionAvailable()})`); return null; }
   const file = path.join(app.getPath('userData'), 'mcp-token.bin');
-  if (!existsSync(file)) return null;
+  if (!existsSync(file)) { why('no token file'); return null; }
   try {
     return safeStorage.decryptString(readFileSync(file));
-  } catch {
+  } catch (error) {
+    why(`decrypt failed: ${String(error).slice(0, 200)}`);
     return null;
   }
 }
