@@ -1,7 +1,7 @@
 {
   "name": "vibex-pca",
   "productName": "Vibex PCA",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Vibex PCA edition for Windows and Linux: Claude Code, terminals, a side browser, servers, notes and an MCP server",
   "license": "MIT",
   "author": {
