@@ -314,6 +314,55 @@ test('18. Claude Code reaches the MCP server through the registration (key fetch
   }
   const { findClaude } = await import('../src/main/claude');
   const { execFileSync } = await import('node:child_process');
+  // PROOF ONLY, not for main: what the helper says when it runs as Claude Code runs it. No key is printed.
+  {
+    const { spawnSync } = await import('node:child_process');
+    const fs = await import('node:fs');
+    const mask = (text: string) => text.replace(/Bearer [A-Za-z0-9_-]+/g, 'Bearer <masked>').slice(0, 1500);
+    const say = (label: string, value: unknown) => console.log(`VIBEX-MCP-DIAG ${label}: ${typeof value === 'string' ? mask(value) : JSON.stringify(value)}`);
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config'), VIBEX_TEST: '1', VIBEX_USER_DATA: path.join(dir, 'profile') };
+    const profile = path.join(dir, 'profile');
+    say('token file', { exists: fs.existsSync(path.join(profile, 'mcp-token.bin')), profile: fs.existsSync(profile) ? fs.readdirSync(profile).slice(0, 30) : 'no profile folder' });
+    let helper = '';
+    try {
+      const config = JSON.parse(fs.readFileSync(path.join(dir, 'claude-config', '.claude.json'), 'utf8'));
+      helper = config.mcpServers?.vibex?.headersHelper ?? '';
+      say('entry', config.mcpServers?.vibex ?? 'no vibex entry');
+    } catch (error) {
+      say('config', String(error));
+      say('config folder', fs.existsSync(path.join(dir, 'claude-config')) ? fs.readdirSync(path.join(dir, 'claude-config')) : 'none');
+    }
+    const report = (label: string, r: ReturnType<typeof spawnSync>, ms: number) => {
+      const out = String(r.stdout ?? '');
+      let parsed = 'not JSON';
+      try { const o = JSON.parse(out); parsed = `JSON, keys ${Object.keys(o).join(',')}, Authorization ${typeof o.Authorization === 'string' && o.Authorization.startsWith('Bearer ') ? `Bearer + ${o.Authorization.length - 7} characters` : 'missing'}`; } catch { /* stays */ }
+      say(label, { status: r.status, signal: r.signal, error: r.error ? String(r.error) : null, ms, stdoutBytes: out.length, parsed, stderr: mask(String(r.stderr ?? '')) });
+    };
+    if (helper) {
+      for (const [label, file, args, extra] of [
+        ['helper through the default shell', helper, [], { shell: true }],
+        ['helper through bash', 'bash', ['-c', helper], {}],
+        ['helper through pwsh', 'pwsh', ['-NoProfile', '-Command', `& ${helper}`], {}],
+      ] as const) {
+        const at = Date.now();
+        report(label, spawnSync(file, [...args], { env, encoding: 'utf8', timeout: 60_000, windowsHide: true, ...extra }), Date.now() - at);
+      }
+      const at = Date.now();
+      report('helper with no test environment', spawnSync(helper, [], { shell: true, encoding: 'utf8', timeout: 60_000, windowsHide: true }), Date.now() - at);
+    }
+    const claude = findClaude()!;
+    for (const args of [['mcp', 'get', 'vibex'], ['--debug', 'mcp', 'list']]) {
+      const r = spawnSync(claude, args, { env, encoding: 'utf8', timeout: 90_000, windowsHide: true });
+      say(`claude ${args.join(' ')}`, { status: r.status, stdout: mask(String(r.stdout ?? '')), stderr: mask(String(r.stderr ?? '')) });
+    }
+    const debugDir = path.join(dir, 'claude-config', 'debug');
+    if (fs.existsSync(debugDir)) {
+      for (const name of fs.readdirSync(debugDir).slice(-3)) {
+        const lines = fs.readFileSync(path.join(debugDir, name), 'utf8').split(/\r?\n/).filter((line) => /vibex|header|helper|401|registration/i.test(line));
+        for (const line of lines.slice(0, 40)) say(`debug ${name}`, line);
+      }
+    } else say('debug folder', 'none');
+  }
   const listed = execFileSync(findClaude()!, ['mcp', 'list'], {
     // Claude runs the helper with this environment. The key is in the test profile, not where a real app keeps it.
     env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config'), VIBEX_TEST: '1', VIBEX_USER_DATA: path.join(dir, 'profile') },
