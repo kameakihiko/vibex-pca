@@ -307,10 +307,13 @@ test('17. the side browser refuses local files and other apps\' links', async ()
 test('18. Claude Code reaches the MCP server through the registration (key fetched from the system store)', async () => {
   const claudeStatus: string = await app.evaluate(() => (globalThis as any).__vibexTest.status.claude);
   test.info().annotations.push({ type: 'claude registration', description: claudeStatus });
-  if (claudeStatus !== 'registered') {
-    // Windows CI has the native claude.exe and DPAPI, so there it must register.
-    expect(process.platform === 'win32' && process.env.VIBEX_EXPECT_CLAUDE === '1').toBe(false);
-    test.skip(true, claudeStatus);
+  // PROOF ONLY, not for main.
+  {
+    const fs = await import('node:fs');
+    console.log(`VIBEX-MCP-DIAG status: ${claudeStatus}`);
+    const log = path.join(dir, 'profile', 'key-read.log');
+    console.log(`VIBEX-MCP-DIAG key-read.log: ${fs.existsSync(log) ? '\n' + fs.readFileSync(log, 'utf8') : 'not there'}`);
+    console.log(`VIBEX-MCP-DIAG Local State at the start of test 18: ${fs.existsSync(path.join(dir, 'profile', 'Local State'))}`);
   }
   const { findClaude } = await import('../src/main/claude');
   const { execFileSync } = await import('node:child_process');
@@ -377,6 +380,11 @@ test('18. Claude Code reaches the MCP server through the registration (key fetch
         for (const line of lines.slice(0, 40)) say(`debug ${name}`, line);
       }
     } else say('debug folder', 'none');
+  }
+  if (claudeStatus !== 'registered') {
+    // Windows CI has the native claude.exe and DPAPI, so there it must register.
+    expect(process.platform === 'win32' && process.env.VIBEX_EXPECT_CLAUDE === '1').toBe(false);
+    test.skip(true, claudeStatus);
   }
   const listed = execFileSync(findClaude()!, ['mcp', 'list'], {
     // Claude runs the helper with this environment. The key is in the test profile, not where a real app keeps it.

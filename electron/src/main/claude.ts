@@ -67,7 +67,13 @@ async function firstKeyRead(): Promise<boolean> {
   if (process.platform !== 'win32') return true;
   const args = [...(app.isPackaged ? [] : [app.getAppPath()]), '--mcp-headers'];
   for (let i = 0; i < FIRST_KEY_READ_TRIES; i++) {
+    const at = Date.now();
     const answer = await run(process.execPath, args);
+    // PROOF ONLY, not for main: what each try answered, with no key in it.
+    try {
+      const { appendFileSync, existsSync: there } = require('node:fs') as typeof import('node:fs');
+      appendFileSync(path.join(app.getPath('userData'), 'key-read.log'), `${new Date().toISOString()} try ${i + 1}: ok=${answer.ok} ms=${Date.now() - at} localState=${there(path.join(app.getPath('userData'), 'Local State'))} exec=${process.execPath} args=${JSON.stringify(args)} output=${answer.output.replace(/Bearer [A-Za-z0-9_-]+/g, 'Bearer <masked>').slice(0, 400)}\n`);
+    } catch { /* proof only */ }
     if (answer.ok && /"Authorization":\s*"Bearer [^"]+"/.test(answer.output)) return true;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
