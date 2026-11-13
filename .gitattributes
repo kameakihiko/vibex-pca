@@ -1,0 +1,5 @@
+# The Electron edition and its workflows keep LF on every computer. With core.autocrlf on, as on a Windows checkout, the shell
+# scripts in the package and the tests that read these files would get CRLF.
+electron/** text=auto eol=lf
+.github/workflows/** text eol=lf
+scripts/** text eol=lf

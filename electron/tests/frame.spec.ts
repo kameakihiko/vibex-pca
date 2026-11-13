@@ -495,7 +495,7 @@ test('19. vibex_projects lists the projects and marks the caller; vibex_open_pro
   await pane('shell').locator('.term.active .xterm').click();
   const onScreen = await page.locator('.tile[aria-current="true"]').getAttribute('data-project');
   expect(textOf(await tool(client, 'vibex_open_project', { path: gamma }))).toContain('blue_lake');
-  await expect(tile(gamma).locator('.mono')).toHaveText('MC');
+  await expect(tile(gamma).locator('.mono')).toHaveText('BL');
   expect(await page.locator('.tile[aria-current="true"]').getAttribute('data-project')).toBe(onScreen);
   await expect(pane('shell').locator('.term.active .xterm-helper-textarea')).toBeFocused();
   await client.close();

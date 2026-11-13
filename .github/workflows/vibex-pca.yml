@@ -117,9 +117,12 @@ jobs:
       # there reads those files, and no other folder. A cache cannot be empty with no error, so the step before it checks.
       - name: Check the installers are there
         run: |
-          ls release/*.exe release/*.deb release/*.AppImage 2>/dev/null | grep -q . || { echo "::error::no installer in release/"; exit 1; }
-          ls release/latest.yml release/latest-linux.yml 2>/dev/null | grep -q . || { echo "::error::no latest.yml or latest-linux.yml in release/"; exit 1; }
-          du -ch release/*.exe release/*.deb release/*.AppImage release/*.blockmap release/latest*.yml release/appimage-gate 2>/dev/null | tail -n 1
+          # No pipe here: this shell stops at the first failed part of a pipe, and ls fails when one of the kinds is not there.
+          shopt -s nullglob
+          installers=(release/*.exe release/*.deb release/*.AppImage)
+          [ "${#installers[@]}" -gt 0 ] || { echo "::error::no installer in release/"; exit 1; }
+          [ -s release/latest.yml ] || [ -s release/latest-linux.yml ] || { echo "::error::no latest.yml or latest-linux.yml in release/"; exit 1; }
+          for file in "${installers[@]}"; do echo "$(basename "$file"): $(( $(wc -c < "$file") / 1048576 )) MB"; done
 
       - name: Keep the installers for the next jobs
         uses: actions/cache/save@v4
