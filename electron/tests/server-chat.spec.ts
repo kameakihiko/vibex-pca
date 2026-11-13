@@ -140,23 +140,28 @@ test.describe('server chat: the ssh arguments', () => {
     expect(args.slice(0, 2)).toEqual(['-o', 'NumberOfPasswordPrompts=1']);
   });
 
+  // One word of the jump's command line, as servers.ts quotes it for the shell that ssh gives the line to: cmd.exe on
+  // Windows, /bin/sh elsewhere.
+  const jumpWord = (text: string) => (process.platform === 'win32' ? `"${text}"` : `'${text}'`);
+
   test('the hub\'s background rule decides the tries: BatchMode with no saved secret, first, also for the jump (the cautious option)', () => {
     const jump: ServerProfile = { name: 'jump', host: 'jump.invalid', user: 'pca' };
     const args = chatLoginArgs(profile, jump, 'true', { asks: true, quiet: ['-o', 'BatchMode=yes'] });
     expect(args.slice(0, 2)).toEqual(['-o', 'BatchMode=yes']);
     expect(args).not.toContain('NumberOfPasswordPrompts=1');
-    expect(args.find((a) => a.startsWith('ProxyCommand='))).toContain("'BatchMode=yes'");
+    expect(args.find((a) => a.startsWith('ProxyCommand='))).toContain(jumpWord('BatchMode=yes'));
   });
 
   test('a jump server\'s own ssh gets the same quiet options (review N4)', () => {
     const jump: ServerProfile = { name: 'jump', host: 'jump.invalid', user: 'pca' };
     const proxy = (asks: boolean) => chatLoginArgs(profile, jump, 'true', { asks }).find((a) => a.startsWith('ProxyCommand='))!;
-    expect(proxy(false)).toContain("'BatchMode=yes'");
-    expect(proxy(true)).toContain("'NumberOfPasswordPrompts=1'");
+    expect(proxy(false)).toContain(jumpWord('BatchMode=yes'));
+    expect(proxy(true)).toContain(jumpWord('NumberOfPasswordPrompts=1'));
     // Before the jump's own options, so its BatchMode=no or a higher count cannot win.
     const own = chatLoginArgs(profile, { ...jump, options: { BatchMode: 'no' } }, 'true', { asks: false }).find((a) => a.startsWith('ProxyCommand='))!;
-    expect(own.indexOf("'BatchMode=yes'")).toBeLessThan(own.indexOf("'BatchMode=no'"));
-    expect(own.indexOf("'BatchMode=yes'")).toBeLessThan(own.indexOf("'-l'"));
+    expect(own.indexOf(jumpWord('BatchMode=yes'))).toBeGreaterThan(-1);
+    expect(own.indexOf(jumpWord('BatchMode=yes'))).toBeLessThan(own.indexOf(jumpWord('BatchMode=no')));
+    expect(own.indexOf(jumpWord('BatchMode=yes'))).toBeLessThan(own.indexOf(jumpWord('-l')));
   });
 
   test('with no way to answer a prompt, BatchMode: a hidden ssh never waits for a passphrase', () => {

@@ -1692,7 +1692,10 @@ test.describe('chat in the app', () => {
     await launch();
     await say('slow');
     await expect(chatOn().locator('.chat-stop')).toBeVisible();
-    const { pid } = starts(logFile).filter((s) => s.argv.includes('--verbose')).at(-1);
+    // The Stop button shows when the app starts the process; the process writes its start line a moment later.
+    const started = () => starts(logFile).filter((s) => s.argv.includes('--verbose'));
+    await expect.poll(() => started().length, { timeout: 15_000 }).toBeGreaterThan(0);
+    const { pid } = started().at(-1);
     await app.close();
     await expect.poll(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, { timeout: 15_000 }).toBe(true);
     app = undefined as unknown as ElectronApplication;
